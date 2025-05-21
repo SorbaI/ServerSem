@@ -4,22 +4,28 @@
 # Files
 #-------
 
-ifeq ($(PROGRAM),)
+ifeq ($(PROGRAM)$(LIBRARY),)
 error:
 	@printf "$(BRED)Specify build target!\n"
 endif
 
+ifneq ($(PROGRAM),)
 EXECUTABLE = build/$(PROGRAM)
-
+endif
+ifneq ($(LIBRARY),)
+LIB = libs/$(LIBRARY)
+endif
 # By default, build executable:
 # NOTE: first target in the file is the default.
-default: $(EXECUTABLE)
+
+default: $(LIB) $(EXECUTABLE)
 
 #-----------------------
 # Compiler/linker flags
 #-----------------------
 
-CC = gcc
+CC := gcc
+
 
 # Compiler flags:
 CFLAGS = \
@@ -29,8 +35,8 @@ CFLAGS = \
 	-Werror
 
 # Linker flags:
-LDFLAGS = -pthread -lrt
-
+LDFLAGS = -pthread -lrt -lm
+CLIBFLAGS = -fpic -shared 
 # Select build mode:
 # NOTE: invoke with "DEBUG=1 make" or "make DEBUG=1".
 ifeq ($(DEBUG),1)
@@ -54,27 +60,23 @@ GREEN   = \033[1;35m
 BCYAN   = \033[1;36m
 RESET   = \033[0m
 
-#-------------
-# Copied file
-#-------------
-
-DUMMY_SRC = build/dummy
-
-create-src-file: $(DUMMY_SRC)
-
-$(DUMMY_SRC):
-	@mkdir -p build
-	@dd if=/dev/zero of=$(DUMMY_SRC) bs=256M count=1
-	@echo "AAA" >> $(DUMMY_SRC)
-
 #-------------------
 # Build/run process
 #-------------------
+libs/%: %.c
+	@printf "$(BYELLOW)Building library $(BCYAN)$<$(RESET)\n"
+	@mkdir -p libs
+	$(CC) $(CLIBFLAGS) $< -o libs/lib$(LIBRARY).so $(LDFLAGS)
+	@sudo cp libs/lib$(LIBRARY).so /usr/local/lib
+	@sudo ldconfig
+	@printf "$(BYELLOW)Library $(BCYAN)lib$(LIBRARY)$(BYELLOW) installed to /usr/local/lib$(RESET)\n"
+
 
 build/%: %.c
 	@printf "$(BYELLOW)Building program $(BCYAN)$<$(RESET)\n"
 	@mkdir -p build
-	$(CC) $< $(CFLAGS) -o $@ $(LDFLAGS)
+	$(CC) $< $(CFLAGS) -o $@ $(LDFLAGS) -l$(LIBRARY)
+	@printf "$(BYELLOW)Program $(BCYAN)$<$(BYELLOW) built to $(BCYAN)$@$(RESET)\n"
 
 run: $(EXECUTABLE) $(DUMMY_SRC)
 	@./$(EXECUTABLE) $(DUMMY_SRC) 3
