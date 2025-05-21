@@ -23,7 +23,7 @@ CFLAGS = \
 	-Werror
 
 # Linker flags:
-LDFLAGS = -pthread -lrt
+LDFLAGS = -pthread -lrt -lm
 
 # Select build mode:
 # NOTE: invoke with "DEBUG=1 make" or "make DEBUG=1".

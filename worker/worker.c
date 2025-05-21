@@ -19,36 +19,10 @@
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
-#include <shed.h>
+#include <sched.h>
 
 #include "common.h"
 #include "worker.h"
-
-//================
-// Данные исполнителя.
-//================
-
-typedef struct
-{
-    // Дескриптор сокета для подключения к серверу.
-    int server_conn_fd;
-
-    // Адрес для подключению к серверу.
-    struct sockaddr server_addr;
-
-    // Максимальное время вычисления.
-    time_t max_time;
-
-    // Количество ядер.
-    int n_cores;
-
-    // Данные для вычисления интеграла.
-    struct worker_data data;
-    
-    // Результат вычислений.
-    double result;
-} INFO_WORKER;
-
 
 //==================
 // Управление сетью
@@ -85,8 +59,6 @@ static void worker_close_socket(INFO_WORKER* worker)
 // Передача данных по сети.
 //=================================
 
-#define TRANSFER_BLOCK_SIZE 1024U
-
 static bool get_data(INFO_WORKER* worker)
 {
     size_t bytes_read = recv(worker->server_conn_fd, &worker->data, sizeof(worker->data), MSG_WAITALL);
@@ -103,28 +75,31 @@ static bool send_result(INFO_WORKER *worker)
 {
     if (!worker)
         return false;
-    struct worker_result res_to_send = {0, worker->result};
+    struct worker_result res_to_send = {.value = worker->result};
 
-    size_t bytes_written = write(conn->server_sock_fd, &res_to_send, sizeof(res_to_send));
+    size_t bytes_written = write(worker->server_conn_fd, &res_to_send, sizeof(res_to_send));
     if (bytes_written != sizeof(res_to_send))
     {
         fprintf(stderr, "Unable to send result to server\n");
         return false;
     }
+
+    return true;
 }
 
 static bool send_node_info(INFO_WORKER *worker, struct node_info *info)
 {
     if (!worker)
         return false;
-    struct worker_result res_to_send = {0, worker->result};
 
-    size_t bytes_written = write(conn->server_sock_fd, info, sizeof(*info));
-    if (bytes_written != sizeof(res_to_send))
+    size_t bytes_written = write(worker->server_conn_fd, info, sizeof(*info));
+    if (bytes_written != sizeof(*info))
     {
         fprintf(stderr, "Unable to send node info to server\n");
         return false;
     }
+
+    return true;
 }
 
 //============================
@@ -141,14 +116,14 @@ static double func_val(FUNC_TABLE func_id, double x)
             return x * x;
         default:
             fprintf(stderr, "Unexpected id for function\n");
-            exit("EXIT_FAILURE");
+            exit(EXIT_FAILURE);
     }
 }
 
 //============================
 // Распределение задач
 //============================
-struct thread_args = 
+struct thread_args
 {
     int func_id;
     long long parts;
@@ -160,9 +135,9 @@ struct thread_args =
 static void *thread_func(void *t_args)
 {
     double result = 0;
-    struct thread_args *args = (struct thread_args) t_args;
-    for (long long i = 0; i < parts; ++i) {
-        result += args->step * func_val(args->func_id, left + step * i + step / 2);
+    struct thread_args *args = (struct thread_args *) t_args;
+    for (long long i = 0; i < args->parts; ++i) {
+        result += args->step * func_val(args->func_id, args->left + args->step * i + args->step / 2);
     }
     args->retval = result;
     return NULL;
@@ -172,11 +147,11 @@ static double distributed_counting(INFO_WORKER *worker)
 {
     // Проверка валидности запрашиваемого числа ядер
     if (worker->n_cores > get_nprocs()) {
-        fprintf(strerr, "[distributed_counting] the number of processors currently \
-                available in the system is less than %s\n", worker->n_cores);
+        fprintf(stderr, "[distributed_counting] the number of processors currently \
+                available in the system is less than required\n");
     }
 
-    int threads_num = n_cores;
+    int threads_num = worker->n_cores;
     pthread_t threads[threads_num];
     struct thread_args args[threads_num];
     // Левая граница подотрезка для потока.
@@ -188,7 +163,7 @@ static double distributed_counting(INFO_WORKER *worker)
         // Выбор ядра для выполнения потока.
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
-        CPU_SET(i % n_cores, &cpuset);
+        CPU_SET(i % worker->n_cores, &cpuset);
         
         pthread_attr_t thread_attr;
         if(pthread_attr_init(&thread_attr)) {
@@ -197,7 +172,7 @@ static double distributed_counting(INFO_WORKER *worker)
         }
 
         // Устанавливаем аффинность потока.
-        if (pthread_attr_setaffinity_np(&thread_attr, sizeof(cpu_set_t), &assigned_harts)) {
+        if (pthread_attr_setaffinity_np(&thread_attr, sizeof(cpuset), &cpuset)) {
             fprintf(stderr, "pthread_attr_setaffinity_np returns with error\n");
             exit(EXIT_FAILURE);
         }
@@ -224,9 +199,9 @@ static double distributed_counting(INFO_WORKER *worker)
 
     double result = 0;
     // Ждём завершения потоков и вычисляем результат.
-    for (size_t i = 0; i < threads_num; ++i)
+    for (int i = 0; i < threads_num; ++i)
     {
-        if (pthread_join(&threads[i], NULL)) {
+        if (pthread_join(threads[i], NULL)) {
             fprintf(stderr, "Unable to join a thread\n");
             exit(EXIT_FAILURE);
         }
@@ -243,10 +218,10 @@ INFO_WORKER init_worker(int n_cores, time_t max_time, char *node, char *service)
 {
     INFO_WORKER worker = {.n_cores = n_cores, .max_time = max_time};
 
-    worker->server_conn_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (worker->server_conn_fd == -1)
+    worker.server_conn_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (worker.server_conn_fd == -1)
     {
-        fprintf(stderr, "[worker_create_socket] Unable to create socket()\n");
+        fprintf(stderr, "[init_worker] Unable to create socket()\n");
         exit(EXIT_FAILURE);
     }
 
@@ -263,18 +238,18 @@ INFO_WORKER init_worker(int n_cores, time_t max_time, char *node, char *service)
 
     if (getaddrinfo(node, service, &hints, &res) != 0)
     {
-        fprintf(stderr, "[worker_create_socket] Unable to call getaddrinfo()\n");
+        fprintf(stderr, "[init_worker] Unable to call getaddrinfo()\n");
         exit(EXIT_FAILURE);
     }
 
     // Проверяем, что для данного запроса существует только один адрес.
     if (res->ai_next != NULL)
     {
-        fprintf(stderr, "[worker_create_socket] Ambigous result of getaddrinfo()\n");
+        fprintf(stderr, "[init_worker] Ambigous result of getaddrinfo()\n");
         exit(EXIT_FAILURE);
     }
 
-    worker->server_addr = *res->ai_addr;
+    worker.server_addr = *res->ai_addr;
     
     return worker;
 }
@@ -319,13 +294,9 @@ void connect_to_server(INFO_WORKER *worker) {
         worker_close_socket(worker);
         exit(EXIT_FAILURE);
     }
-    
-    // Освобождение сокета.
-    worker_close_socket(worker);
-    worker->server_conn_fd = -1;
 }
 
-void worker_close(&worker)
+void worker_close(INFO_WORKER *worker)
 {
     // Освобождение сокета.
     if (worker->server_conn_fd >= 0)
@@ -341,6 +312,8 @@ void worker_close(&worker)
 
 int main(int argc, char** argv)
 {
+    time_t max_time = 10;
+    int n_cores = 1;
     if (argc != 3)
     {
         fprintf(stderr, "Usage: worker <node> <service>\n");
@@ -348,7 +321,7 @@ int main(int argc, char** argv)
     }
 
     // Данные исполнителя.
-    INFO_WORKER worker = init_worker(args[1], args[2]);
+    INFO_WORKER worker = init_worker(n_cores, max_time, argv[1], argv[2]);
 
     connect_to_server(&worker);
 

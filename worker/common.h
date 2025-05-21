@@ -1,21 +1,19 @@
-enum FUNC_TABLE = 
+typedef enum
 {
     EXP,
     SIN,
     SQR,
     NOT_SUPPORT,
-};
+} FUNC_TABLE;
 
 struct worker_data {
     FUNC_TABLE func_id; 
     double left;
-    double right;
     double step;
     long long num_steps;
 };
 
 struct worker_result {
-    int status;
     double value;
 };
 
